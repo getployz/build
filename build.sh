@@ -34,7 +34,8 @@ report() {
     fi
 }
 
-# stdout is one JSON line; build logs go to stderr and, as events, to a file.
+# stdout is one JSON line, printed once the image is pushed; build logs go to stderr and, as
+# events, to a file. After the push, ployz goes on uploading build cache, which Cloud doesn't wait for.
 ployz build \
     --deployment "$work/deployment.json" \
     --commit "$(jq -r '.commit' "$work/check-in.json")" \
@@ -42,15 +43,22 @@ ployz build \
     --source "$GITHUB_WORKSPACE" \
     --events "$events" >"$work/result.json" &
 build=$!
-while kill -0 "$build" 2>/dev/null; do
+# Cloud takes the digest from the Machine, not from here; the platforms end the report and settle
+# the build, so they go as soon as the result line is complete.
+ended=
+while [[ -z $ended ]] && kill -0 "$build" 2>/dev/null; do
     sleep "$interval"
-    report
+    if platforms=$(jq -ec '.platforms' "$work/result.json" 2>/dev/null); then
+        report "$platforms"
+        ended=1
+    else
+        report
+    fi
 done
 status=0
 wait "$build" || status=$?
 
-# Cloud takes the digest from the Machine, not from here; the platforms end the report.
-report "$(if [[ $status == 0 ]]; then jq -c '.platforms' "$work/result.json"; else echo '[]'; fi)"
+[[ -n $ended ]] || report "$(if [[ $status == 0 ]]; then jq -c '.platforms' "$work/result.json"; else echo '[]'; fi)"
 [[ $status == 0 ]] || exit "$status"
 digest=$(jq -r '.digest' "$work/result.json")
 echo "digest=$digest" >>"$GITHUB_OUTPUT"

@@ -53,6 +53,12 @@ sleep 0.5
 echo '{"at":3,"event":{"Build":{"Stage":"Cleanup"}}}' >>"\$events"
 [ -z "\${PLOYZ_FAIL:-}" ] || exit 3
 echo '{"digest":"sha256:abc","tag":"ployz-sha256-abc","platforms":["linux/amd64"]}'
+# The build cache export, after the push: Cloud has the final report before it ends.
+rm -f "$tmp/reported-during-export"
+sleep 0.5
+jq -se 'any(.[]; has("platforms"))' "$tmp/posted.jsonl" >/dev/null && : >"$tmp/reported-during-export"
+# A failed export is only a warning.
+[ -z "\${PLOYZ_EXPORT_FAIL:-}" ] || echo "warning: the image was pushed, but its build cache was not exported" >&2
 STUB
 chmod +x "$tmp/stubs/"*
 
@@ -79,6 +85,14 @@ reported='length >= 2 and .[0].from == 0 and (.[0] | has("platforms") | not)
   and ([.[].events[].at] == [1, 2, 3]) and (. as $b | all(range(1; $b | length); $b[.].from == $b[. - 1].from + ($b[. - 1].events | length)))'
 jq -s -e "$reported"' and .[-1].platforms == ["linux/amd64"]' "$tmp/posted.jsonl" >/dev/null ||
   { echo "FAIL: Build Steps not posted as they happened" >&2; cat "$tmp/posted.jsonl" >&2; exit 1; }
+[ -e "$tmp/reported-during-export" ] || { echo "FAIL: the final report waited for the cache export" >&2; exit 1; }
+# A failed cache export still passes the job, whose report went when the image was pushed.
+rm "$tmp/posted.jsonl" "$GITHUB_OUTPUT"
+PLOYZ_EXPORT_FAIL=1 "$here/build.sh" >/dev/null 2>&1 || { echo "FAIL: a failed cache export failed the job" >&2; exit 1; }
+[ -e "$tmp/reported-during-export" ] || { echo "FAIL: the final report waited for a failing cache export" >&2; exit 1; }
+jq -s -e "$reported"' and .[-1].platforms == ["linux/amd64"]' "$tmp/posted.jsonl" >/dev/null ||
+  { echo "FAIL: a failed cache export changed the report" >&2; cat "$tmp/posted.jsonl" >&2; exit 1; }
+grep -qxF "digest=sha256:abc" "$GITHUB_OUTPUT" || { echo "FAIL: digest output after a failed cache export" >&2; exit 1; }
 # A failed build still reports its steps, then fails the job.
 rm "$tmp/posted.jsonl"
 if PLOYZ_FAIL=1 "$here/build.sh" >/dev/null 2>&1; then echo "FAIL: a failed build passed" >&2; exit 1; fi
