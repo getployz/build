@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Readies the runner (Docker, ployz), then checks in with Ployz Cloud. Runs before checkout.
+# Readies Docker, checks in with Ployz Cloud, then installs the ployz version the check-in names. Runs before checkout.
 set -euo pipefail
 
 # shellcheck source=oidc.sh
@@ -14,7 +14,6 @@ fail() {
 [[ "$PLOYZ_BUILD_ID" =~ ^[A-Za-z0-9_-]{1,128}$ ]] || fail "Invalid build id."
 cloud=${PLOYZ_CLOUD%/}
 [[ "$cloud" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] || fail "Invalid Cloud URL; expected an origin like https://ployz.dev."
-[[ "$PLOYZ_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.(0|[1-9][0-9]*))?$ ]] || fail "Invalid ployz version."
 [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]] || fail "The workflow needs 'permissions: id-token: write'."
 
 umask 077
@@ -33,11 +32,6 @@ if ! has_containerd_store; then
     sudo systemctl restart docker
     has_containerd_store || fail "Docker's containerd image store could not be enabled."
 fi
-
-# The exact version Cloud runs, so the build fingerprint matches.
-curl -fsSL https://ployz.sh -o "$work/install.sh"
-PLOYZ_VERSION="$PLOYZ_VERSION" INSTALL_BIN_DIR="$work/bin" sh "$work/install.sh"
-echo "$work/bin" >>"$GITHUB_PATH"
 
 # GitHub's OIDC token proves this run to Cloud; its audience is the Cloud origin.
 oidc_token "$cloud"
@@ -59,5 +53,14 @@ commit=$(jq -r '.commit' "$work/check-in.json")
     fail "Check-in response has no fingerprint."
 jq -e '.deployment | objects' "$work/check-in.json" >"$work/deployment.json" ||
     fail "Check-in response has no deployment."
+version=$(jq -r '.ployzVersion' "$work/check-in.json")
+[[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-beta\.(0|[1-9][0-9]*))?$ ]] ||
+    fail "Check-in response has no valid ployz version."
+
+# The exact version that computed the fingerprint: during a Cloud rollout, the Cloud that
+# dispatched this build may run another version than the one that answered the check-in.
+curl -fsSL https://ployz.sh -o "$work/install.sh"
+PLOYZ_VERSION="$version" INSTALL_BIN_DIR="$work/bin" sh "$work/install.sh"
+echo "$work/bin" >>"$GITHUB_PATH"
 
 echo "commit=$commit" >>"$GITHUB_OUTPUT"

@@ -10,9 +10,6 @@ inputs:
   cloud:
     description: Ployz Cloud URL that dispatched the build, for example https://ployz.dev.
     required: true
-  ployz_version:
-    description: Exact ployz version to install. Cloud sends its own SDK version so the build fingerprint matches.
-    required: true
 outputs:
   digest:
     description: Manifest digest that the Machine received.
@@ -27,7 +24,6 @@ runs:
       env:
         PLOYZ_BUILD_ID: ${{ inputs.build }}
         PLOYZ_CLOUD: ${{ inputs.cloud }}
-        PLOYZ_VERSION: ${{ inputs.ployz_version }}
       run: '"$GITHUB_ACTION_PATH/prepare.sh"'
     - uses: actions/checkout@v4
       with:
