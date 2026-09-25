@@ -14,7 +14,6 @@ The GitHub App needs **Actions: write** and **Contents: read**, plus the **Push*
 | --- | --- |
 | `build` | Image Build id (`[A-Za-z0-9_-]`, up to 128 characters) |
 | `cloud` | Cloud origin, for example `https://ployz.dev`. It is also the OIDC audience. |
-| `ployz_version` | Cloud's own SDK version, pinned exactly so the build fingerprint matches |
 | `runner` | The native runner for the one platform the Service needs: `ubuntu-latest` (amd64) or `ubuntu-24.04-arm` (arm64) |
 
 Inputs are visible in GitHub, so none of them is secret.
@@ -23,12 +22,12 @@ Inputs are visible in GitHub, so none of them is secret.
 
 1. Exports the Actions cache runtime (`crazy-max/ghaction-github-runtime`), so `ployz build` uses the GitHub Actions cache.
 2. Turns on Docker's containerd image store if it is off. This restarts Docker and needs `sudo`.
-3. Installs exactly `ployz_version` from `https://ployz.sh`. The installer verifies the release checksum.
-4. Gets a GitHub OIDC token with audience `cloud` and checks in: `POST {cloud}/api/builds/{build}/check-in` with `Authorization: Bearer <token>`. Cloud answers:
+3. Gets a GitHub OIDC token with audience `cloud` and checks in: `POST {cloud}/api/builds/{build}/check-in` with `Authorization: Bearer <token>`. Cloud answers:
    ```json
-   {"grant": "ployzgrant1:…", "commit": "<40 hex>", "fingerprint": "<64 hex>", "deployment": { "snapshots": [{ "resolvedEnv": {} }] }}
+   {"grant": "ployzgrant1:…", "commit": "<40 hex>", "fingerprint": "<64 hex>", "ployzVersion": "<x.y.z[-beta.n]>", "deployment": { "snapshots": [{ "resolvedEnv": {} }] }}
    ```
    The token, the grant, and every `resolvedEnv` value are masked (`::add-mask::`, per line) before anything else runs. A check-in that can't reach Cloud is retried; an HTTP error is not, and the job fails with Cloud's status and message.
+4. Installs exactly `ployzVersion` from `https://ployz.sh`: the version of the Cloud process that computed `fingerprint`, so they match even while Cloud rolls out a new version. The installer verifies the release checksum.
 5. Checks out `commit` without persisting credentials.
 6. Runs `PLOYZ_BUILD_GRANT=… ployz build --deployment <file> --commit <commit> --fingerprint <fingerprint> --events <file>`. The deployment file lives in `$RUNNER_TEMP` and is deleted when the job ends, pass or fail.
 7. Reports the Build Steps while it builds, every few seconds, each time with a fresh OIDC token: `POST {cloud}/api/builds/{build}/steps` with `{"from": <line>, "events": [<new ployz build --events lines>]}`, where `from` is the 0-based line the batch starts at. Cloud files only lines it hasn't taken, so a retried batch is harmless. When the build ends, pass or fail, the last batch adds `"platforms": [...]`; empty means the build failed, and Cloud takes no more.
