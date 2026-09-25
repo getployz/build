@@ -26,11 +26,11 @@ report() {
         jq -cs --argjson from "$sent" --argjson platforms "${1:-null}" \
             '{from: $from, events: .} + (if $platforms == null then {} else {platforms: $platforms} end)' >"$work/steps.json"
     oidc_token "$cloud"
-    if curl -fsS --retry 3 -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
-        --data-binary "@$work/steps.json" "$cloud/api/builds/$PLOYZ_BUILD_ID/steps" >/dev/null; then
+    if cloud_post "$cloud/api/builds/$PLOYZ_BUILD_ID/steps" "$work/steps-response.json" \
+        -H "Content-Type: application/json" --data-binary "@$work/steps.json"; then
         sent=$lines
     else
-        echo "::warning::Ployz Cloud did not accept the Build Steps."
+        echo "::warning::Ployz Cloud did not accept the Build Steps ($cloud_error)."
     fi
 }
 

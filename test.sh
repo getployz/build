@@ -16,18 +16,25 @@ JSON
 
 cat >"$tmp/stubs/curl" <<STUB
 #!/usr/bin/env bash
-out=; url=
+out=; url=; status=
 while [ \$# -gt 0 ]; do
-  case "\$1" in -o) out=\$2; shift ;; --data-binary) cat "\${2#@}" >>"$tmp/posted.jsonl"; shift ;; -H|-X|--retry) shift ;; -*) ;; *) url=\$1 ;; esac
+  case "\$1" in -o) out=\$2; shift ;; -w) status=200; shift ;; --data-binary) cat "\${2#@}" >>"$tmp/posted.jsonl"; shift ;; -H|-X) shift ;; -*) ;; *) url=\$1 ;; esac
   shift
 done
 case "\$url" in
   https://ployz.sh) printf '%s\n' 'mkdir -p "\$INSTALL_BIN_DIR"; : > "\$INSTALL_BIN_DIR/ployz"; chmod +x "\$INSTALL_BIN_DIR/ployz"' > "\$out" ;;
   *audience=https%3A%2F%2Fcloud.test) echo '{"value":"oidc-token"}' ;;
-  https://cloud.test/api/builds/b-1/check-in) cp "$tmp/check-in.json" "\$out" ;;
-  https://cloud.test/api/builds/b-1/steps) ;;
+  https://cloud.test/api/builds/b-1/check-in)
+    echo >>"$tmp/check-ins"
+    # CHECK_IN=unreachable: the first try can't connect. CHECK_IN=refused: Cloud answers 409.
+    if [ "\${CHECK_IN:-}" = unreachable ] && [ "\$(wc -l <"$tmp/check-ins")" = 1 ]; then echo "curl: (7) Failed to connect" >&2; exit 7; fi
+    if [ "\${CHECK_IN:-}" = refused ]; then
+      echo '{"_tag":"PublicError","code":"CONFLICT","message":"This build already started or is no longer wanted."}' >"\$out"; status=409
+    else cp "$tmp/check-in.json" "\$out"; fi ;;
+  https://cloud.test/api/builds/b-1/steps) echo '{}' >"\$out" ;;
   *) echo "unexpected curl \$url" >&2; exit 1 ;;
 esac
+printf '%s' "\$status"
 STUB
 cat >"$tmp/stubs/docker" <<'STUB'
 #!/usr/bin/env bash
@@ -72,6 +79,16 @@ jq -s -e "$reported"' and .[-1].platforms == ["linux/amd64"]' "$tmp/posted.jsonl
 rm "$tmp/posted.jsonl"
 if PLOYZ_FAIL=1 "$here/build.sh" >/dev/null 2>&1; then echo "FAIL: a failed build passed" >&2; exit 1; fi
 jq -s -e "$reported"' and .[-1].platforms == []' "$tmp/posted.jsonl" >/dev/null || { echo "FAIL: a failed build did not report" >&2; exit 1; }
+
+# A check-in that can't reach Cloud is retried; one Cloud refuses is not, and the job shows why.
+rm -f "$tmp/check-ins"
+CHECK_IN=unreachable "$here/prepare.sh" >/dev/null 2>&1 || { echo "FAIL: an unreachable check-in was not retried" >&2; exit 1; }
+[ "$(wc -l <"$tmp/check-ins")" = 2 ] || { echo "FAIL: check-in tries after a connection failure" >&2; exit 1; }
+rm "$tmp/check-ins"
+if log=$(CHECK_IN=refused "$here/prepare.sh" 2>&1); then echo "FAIL: a refused check-in passed" >&2; exit 1; fi
+grep -qF "::error::Ployz Cloud refused the check-in for build b-1 (HTTP 409: This build already started or is no longer wanted.)" <<<"$log" ||
+  { echo "FAIL: a refused check-in did not print Cloud's answer" >&2; echo "$log" >&2; exit 1; }
+[ "$(wc -l <"$tmp/check-ins")" = 1 ] || { echo "FAIL: a refused check-in was retried" >&2; exit 1; }
 
 if PLOYZ_VERSION=latest "$here/prepare.sh" >/dev/null 2>&1; then echo "FAIL: accepted a floating version" >&2; exit 1; fi
 if PLOYZ_CLOUD=https://evil.test/path "$here/prepare.sh" >/dev/null 2>&1; then echo "FAIL: accepted a Cloud URL with a path" >&2; exit 1; fi

@@ -42,9 +42,8 @@ echo "$work/bin" >>"$GITHUB_PATH"
 # GitHub's OIDC token proves this run to Cloud; its audience is the Cloud origin.
 oidc_token "$cloud"
 
-curl -fsS --retry 3 -X POST -H "Authorization: Bearer $token" \
-    -o "$work/check-in.json" "$cloud/api/builds/$PLOYZ_BUILD_ID/check-in" ||
-    fail "Ployz Cloud refused the check-in for build $PLOYZ_BUILD_ID."
+cloud_post "$cloud/api/builds/$PLOYZ_BUILD_ID/check-in" "$work/check-in.json" ||
+    fail "Ployz Cloud refused the check-in for build $PLOYZ_BUILD_ID ($cloud_error)."
 
 # Mask the grant and every build secret before anything can print them. Masks are per line.
 jq -r '.grant, (.deployment.snapshots[]?.resolvedEnv // {} | .[])' "$work/check-in.json" |
