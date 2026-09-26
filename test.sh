@@ -86,7 +86,7 @@ grep -qxF "digest=sha256:abc" "$GITHUB_OUTPUT" || { echo "FAIL: digest output" >
 # Steps go to Cloud while the build runs, each batch from where the last one ended; the last carries the platforms.
 # shellcheck disable=SC2016 # jq variables, not shell ones
 reported='length >= 2 and .[0].from == 0 and (.[0] | has("platforms") | not)
-  and ([.[].events[].at] == [1, 2, 3]) and (. as $b | all(range(1; $b | length); $b[.].from == $b[. - 1].from + ($b[. - 1].events | length)))'
+  and ([.[].events[].at][1:] == [1, 2, 3]) and .[0].events[0].event.Build.Step.name == "Installing ployz" and (. as $b | all(range(1; $b | length); $b[.].from == $b[. - 1].from + ($b[. - 1].events | length)))'
 jq -s -e "$reported"' and .[-1].platforms == ["linux/amd64"]' "$tmp/posted.jsonl" >/dev/null ||
   { echo "FAIL: Build Steps not posted as they happened" >&2; cat "$tmp/posted.jsonl" >&2; exit 1; }
 [ -e "$tmp/reported-during-export" ] || { echo "FAIL: the final report waited for the cache export" >&2; exit 1; }
@@ -115,7 +115,8 @@ grep -qF "::error::Ployz Cloud refused the check-in for build b-1 (HTTP 409: Thi
 # A failed install tells Cloud, naming the version, so Cloud moves the build on; the job fails.
 rm -f "$tmp/posted.jsonl"
 if log=$(INSTALL_FAIL=1 "$here/prepare.sh" 2>&1); then echo "FAIL: a failed install passed" >&2; exit 1; fi
-jq -s -e '. == [{from: 0, events: [], platforms: [], installFailed: "0.1.0-beta.28"}]' "$tmp/posted.jsonl" >/dev/null ||
+jq -s -e 'length == 1 and (.[0] | .from == 0 and .platforms == [] and .installFailed == "0.1.0-beta.28"
+  and (.events | length == 1 and .[0].event.Build.Step.error == "Could not install ployz 0.1.0-beta.28."))' "$tmp/posted.jsonl" >/dev/null ||
   { echo "FAIL: a failed install did not report" >&2; cat "$tmp/posted.jsonl" >&2; exit 1; }
 grep -qxF "::error::Could not install ployz 0.1.0-beta.28." <<<"$log" || { echo "FAIL: a failed install did not say why" >&2; echo "$log" >&2; exit 1; }
 

@@ -60,10 +60,20 @@ version=$(jq -r '.ployzVersion' "$work/check-in.json")
 
 # The exact version that computed the fingerprint: during a Cloud rollout, the Cloud that
 # dispatched this build may run another version than the one that answered the check-in.
+# The install is the first Build Step, timed here where it runs, as a `ployz build --events` line:
+# build.sh reports it ahead of the build's own. $1: why it failed.
+install_started=$(date -u +%FT%T.%3NZ)
+install_step() {
+    jq -cn --argjson at "$(date +%s%3N)" --arg started "$install_started" --arg completed "$(date -u +%FT%T.%3NZ)" --arg error "${1:-}" \
+        '{at: $at, event: {Build: {Step: {id: "install", name: "Installing ployz", started: $started, completed: $completed,
+            cached: false, error: (if $error == "" then null else $error end)}}}}' >"$work/install.jsonl"
+}
 # A failed install never reaches build.sh, so its final report goes from here, naming the version:
 # Cloud then moves the build on to the next Builder instead of waiting for the run to end.
 install_failed() {
-    jq -n --arg version "$version" '{from: 0, events: [], platforms: [], installFailed: $version}' >"$work/steps.json"
+    install_step "Could not install ployz $version."
+    jq -n --arg version "$version" --slurpfile events "$work/install.jsonl" \
+        '{from: 0, events: $events, platforms: [], installFailed: $version}' >"$work/steps.json"
     oidc_token "$cloud"
     cloud_post "$cloud/api/builds/$PLOYZ_BUILD_ID/steps" "$work/steps-response.json" \
         -H "Content-Type: application/json" --data-binary "@$work/steps.json" ||
@@ -72,6 +82,7 @@ install_failed() {
 }
 curl -fsSL https://ployz.sh -o "$work/install.sh" || install_failed
 PLOYZ_VERSION="$version" INSTALL_BIN_DIR="$work/bin" sh "$work/install.sh" || install_failed
+install_step
 echo "$work/bin" >>"$GITHUB_PATH"
 
 echo "commit=$commit" >>"$GITHUB_OUTPUT"
