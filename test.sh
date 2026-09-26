@@ -11,7 +11,7 @@ commit=0123456789abcdef0123456789abcdef01234567
 fingerprint=$(printf 'f%.0s' {1..64})
 cat >"$tmp/check-in.json" <<JSON
 {"grant":"ployzgrant1:grant-secret","commit":"$commit","fingerprint":"$fingerprint","ployzVersion":"0.1.0-beta.28",
- "deployment":{"projectName":"p","snapshots":[{"config":{},"resolvedEnv":{"TOKEN":"s3cr3t","KEY":"line-one\nline-two"}}]}}
+ "deployment":{"projectName":"p","snapshots":[{"config":{},"resolvedEnv":{"TOKEN":"s3cr3t","KEY":"line-one\nline-two","PORT":"0","ABC":"abc"}}]}}
 JSON
 
 cat >"$tmp/stubs/curl" <<STUB
@@ -22,7 +22,7 @@ while [ \$# -gt 0 ]; do
   shift
 done
 case "\$url" in
-  https://ployz.sh) printf '%s\n' 'mkdir -p "\$INSTALL_BIN_DIR"; echo "\$PLOYZ_VERSION" > "$tmp/installed"; : > "\$INSTALL_BIN_DIR/ployz"; chmod +x "\$INSTALL_BIN_DIR/ployz"' > "\$out" ;;
+  https://ployz.sh) if [ -n "\${INSTALL_FAIL:-}" ]; then echo "curl: (22) 404" >&2; exit 22; fi; printf '%s\n' 'mkdir -p "\$INSTALL_BIN_DIR"; echo "\$PLOYZ_VERSION" > "$tmp/installed"; : > "\$INSTALL_BIN_DIR/ployz"; chmod +x "\$INSTALL_BIN_DIR/ployz"' > "\$out" ;;
   *audience=https%3A%2F%2Fcloud.test) echo '{"value":"oidc-token"}' ;;
   https://cloud.test/api/builds/b-1/check-in)
     echo >>"$tmp/check-ins"
@@ -71,6 +71,10 @@ log=$("$here/prepare.sh")
 for mask in oidc-token ployzgrant1:grant-secret s3cr3t line-one line-two; do
   grep -qxF "::add-mask::$mask" <<<"$log" || { echo "FAIL: $mask not masked" >&2; exit 1; }
 done
+# Values under 4 characters aren't masked: masking `0` would turn HTTP 404 into 4***4.
+for short in 0 abc; do
+  if grep -qxF "::add-mask::$short" <<<"$log"; then echo "FAIL: short value $short masked" >&2; exit 1; fi
+done
 grep -qxF "commit=$commit" "$GITHUB_OUTPUT" || { echo "FAIL: commit output" >&2; exit 1; }
 jq -e '.snapshots[0].resolvedEnv.TOKEN == "s3cr3t"' "$RUNNER_TEMP/ployz-build/deployment.json" >/dev/null
 [ -x "$(cat "$GITHUB_PATH")/ployz" ] || { echo "FAIL: ployz not installed" >&2; exit 1; }
@@ -107,6 +111,13 @@ if log=$(CHECK_IN=refused "$here/prepare.sh" 2>&1); then echo "FAIL: a refused c
 grep -qF "::error::Ployz Cloud refused the check-in for build b-1 (HTTP 409: This build already started or is no longer wanted.)" <<<"$log" ||
   { echo "FAIL: a refused check-in did not print Cloud's answer" >&2; echo "$log" >&2; exit 1; }
 [ "$(wc -l <"$tmp/check-ins")" = 1 ] || { echo "FAIL: a refused check-in was retried" >&2; exit 1; }
+
+# A failed install tells Cloud, naming the version, so Cloud moves the build on; the job fails.
+rm -f "$tmp/posted.jsonl"
+if log=$(INSTALL_FAIL=1 "$here/prepare.sh" 2>&1); then echo "FAIL: a failed install passed" >&2; exit 1; fi
+jq -s -e '. == [{from: 0, events: [], platforms: [], installFailed: "0.1.0-beta.28"}]' "$tmp/posted.jsonl" >/dev/null ||
+  { echo "FAIL: a failed install did not report" >&2; cat "$tmp/posted.jsonl" >&2; exit 1; }
+grep -qxF "::error::Could not install ployz 0.1.0-beta.28." <<<"$log" || { echo "FAIL: a failed install did not say why" >&2; echo "$log" >&2; exit 1; }
 
 rm "$tmp/installed"
 if CHECK_IN=bad-version "$here/prepare.sh" >/dev/null 2>&1; then echo "FAIL: accepted a malformed ployz version" >&2; exit 1; fi

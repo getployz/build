@@ -40,9 +40,10 @@ cloud_post "$cloud/api/builds/$PLOYZ_BUILD_ID/check-in" "$work/check-in.json" ||
     fail "Ployz Cloud refused the check-in for build $PLOYZ_BUILD_ID ($cloud_error)."
 
 # Mask the grant and every build secret before anything can print them. Masks are per line.
+# Lines under 4 characters stay visible: masking a value like `0` would star out every 0 in the log.
 jq -r '.grant, (.deployment.snapshots[]?.resolvedEnv // {} | .[])' "$work/check-in.json" |
     while IFS= read -r line; do
-        if [[ -n "$line" ]]; then echo "::add-mask::$line"; fi
+        if [[ ${#line} -ge 4 ]]; then echo "::add-mask::$line"; fi
     done
 
 jq -e '.grant | type == "string" and startswith("ployzgrant1:")' "$work/check-in.json" >/dev/null ||
@@ -59,8 +60,18 @@ version=$(jq -r '.ployzVersion' "$work/check-in.json")
 
 # The exact version that computed the fingerprint: during a Cloud rollout, the Cloud that
 # dispatched this build may run another version than the one that answered the check-in.
-curl -fsSL https://ployz.sh -o "$work/install.sh"
-PLOYZ_VERSION="$version" INSTALL_BIN_DIR="$work/bin" sh "$work/install.sh"
+# A failed install never reaches build.sh, so its final report goes from here, naming the version:
+# Cloud then moves the build on to the next Builder instead of waiting for the run to end.
+install_failed() {
+    jq -n --arg version "$version" '{from: 0, events: [], platforms: [], installFailed: $version}' >"$work/steps.json"
+    oidc_token "$cloud"
+    cloud_post "$cloud/api/builds/$PLOYZ_BUILD_ID/steps" "$work/steps-response.json" \
+        -H "Content-Type: application/json" --data-binary "@$work/steps.json" ||
+        echo "::warning::Ployz Cloud did not accept the report ($cloud_error)."
+    fail "Could not install ployz $version."
+}
+curl -fsSL https://ployz.sh -o "$work/install.sh" || install_failed
+PLOYZ_VERSION="$version" INSTALL_BIN_DIR="$work/bin" sh "$work/install.sh" || install_failed
 echo "$work/bin" >>"$GITHUB_PATH"
 
 echo "commit=$commit" >>"$GITHUB_OUTPUT"
