@@ -16,13 +16,19 @@ export PLOYZ_BUILD_GRANT
 : >"$events"
 sent=0
 
+# Every event line so far: prepare.sh's "Installing ployz", then the build's own.
+steps() {
+    [[ ! -f "$work/install.jsonl" ]] || cat "$work/install.jsonl"
+    cat "$events"
+}
+
 # Posts the complete event lines not sent yet, from line $sent; with $1, the platforms built, the
 # build's end. A fresh OIDC token proves this run each time. Best effort: a refused batch is resent.
 report() {
     local lines
-    lines=$(wc -l <"$events")
+    lines=$(steps | wc -l)
     [[ -n "${1:-}" || $lines -gt $sent ]] || return 0
-    tail -n "+$((sent + 1))" "$events" | head -n "$((lines - sent))" |
+    steps | tail -n "+$((sent + 1))" | head -n "$((lines - sent))" |
         jq -cs --argjson from "$sent" --argjson platforms "${1:-null}" \
             '{from: $from, events: .} + (if $platforms == null then {} else {platforms: $platforms} end)' >"$work/steps.json"
     oidc_token "$cloud"
