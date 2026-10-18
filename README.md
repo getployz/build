@@ -12,7 +12,7 @@ The GitHub App needs **Actions: write** and **Contents: read**, plus the **Push*
 
 | Input | Set by Cloud to |
 | --- | --- |
-| `build` | Image Build id (`[A-Za-z0-9_-]`, up to 128 characters) |
+| `build` | Image Build id, `DEPLOYMENT.SERVICE` (`[A-Za-z0-9._-]`, up to 128 characters, not starting with `.`) |
 | `cloud` | Cloud origin, for example `https://ployz.dev`. It is also the OIDC audience. |
 | `runner` | The native runner for the one platform the Service needs: `ubuntu-latest` (amd64) or `ubuntu-24.04-arm` (arm64) |
 

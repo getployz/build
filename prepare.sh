@@ -11,7 +11,8 @@ fail() {
 }
 
 [[ "$(uname -s)" == Linux ]] || fail "Ployz builds need a Linux runner."
-[[ "$PLOYZ_BUILD_ID" =~ ^[A-Za-z0-9_-]{1,128}$ ]] || fail "Invalid build id."
+# A URL path segment: never "." or "..".
+[[ "$PLOYZ_BUILD_ID" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$ ]] || fail "Invalid build id."
 cloud=${PLOYZ_CLOUD%/}
 [[ "$cloud" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] || fail "Invalid Cloud URL; expected an origin like https://ployz.dev."
 [[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]] || fail "The workflow needs 'permissions: id-token: write'."
