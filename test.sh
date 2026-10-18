@@ -7,7 +7,6 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/stubs" "$tmp/runner" "$tmp/workspace"
 
-# The shape Cloud mints: DEPLOYMENT.SERVICE.
 build=00000000-0000-4000-8000-00000000b101.web
 commit=0123456789abcdef0123456789abcdef01234567
 fingerprint=$(printf 'f%.0s' {1..64})
