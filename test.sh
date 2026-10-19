@@ -7,6 +7,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/stubs" "$tmp/runner" "$tmp/workspace"
 
+build=00000000-0000-4000-8000-00000000b101.web
 commit=0123456789abcdef0123456789abcdef01234567
 fingerprint=$(printf 'f%.0s' {1..64})
 cat >"$tmp/check-in.json" <<JSON
@@ -24,7 +25,7 @@ done
 case "\$url" in
   https://ployz.sh) if [ -n "\${INSTALL_FAIL:-}" ]; then echo "curl: (22) 404" >&2; exit 22; fi; printf '%s\n' 'mkdir -p "\$INSTALL_BIN_DIR"; echo "\$PLOYZ_VERSION" > "$tmp/installed"; : > "\$INSTALL_BIN_DIR/ployz"; chmod +x "\$INSTALL_BIN_DIR/ployz"' > "\$out" ;;
   *audience=https%3A%2F%2Fcloud.test) echo '{"value":"oidc-token"}' ;;
-  https://cloud.test/api/builds/b-1/check-in)
+  https://cloud.test/api/builds/$build/check-in)
     echo >>"$tmp/check-ins"
     # CHECK_IN=unreachable: the first try can't connect. CHECK_IN=refused: Cloud answers 409.
     # CHECK_IN=bad-version: Cloud names a ployz version that isn't a release tag.
@@ -33,7 +34,7 @@ case "\$url" in
       echo '{"_tag":"PublicError","code":"CONFLICT","message":"This build already started or is no longer wanted."}' >"\$out"; status=409
     elif [ "\${CHECK_IN:-}" = bad-version ]; then jq '.ployzVersion = "0.1.0; curl evil.test"' "$tmp/check-in.json" >"\$out"
     else cp "$tmp/check-in.json" "\$out"; fi ;;
-  https://cloud.test/api/builds/b-1/steps) echo '{}' >"\$out" ;;
+  https://cloud.test/api/builds/$build/steps) echo '{}' >"\$out" ;;
   *) echo "unexpected curl \$url" >&2; exit 1 ;;
 esac
 printf '%s' "\$status"
@@ -65,7 +66,7 @@ chmod +x "$tmp/stubs/"*
 export PATH="$tmp/stubs:$PATH" RUNNER_TEMP="$tmp/runner" GITHUB_WORKSPACE="$tmp/workspace"
 export GITHUB_OUTPUT="$tmp/output" GITHUB_PATH="$tmp/path" GITHUB_STEP_SUMMARY="$tmp/summary"
 export ACTIONS_ID_TOKEN_REQUEST_URL="https://token.test/?x=1" ACTIONS_ID_TOKEN_REQUEST_TOKEN=request-token
-export PLOYZ_BUILD_ID=b-1 PLOYZ_CLOUD=https://cloud.test/ PLOYZ_STEPS_INTERVAL=0.1
+export PLOYZ_BUILD_ID=$build PLOYZ_CLOUD=https://cloud.test/ PLOYZ_STEPS_INTERVAL=0.1
 
 log=$("$here/prepare.sh")
 for mask in oidc-token ployzgrant1:grant-secret s3cr3t line-one line-two; do
@@ -108,7 +109,7 @@ CHECK_IN=unreachable "$here/prepare.sh" >/dev/null 2>&1 || { echo "FAIL: an unre
 [ "$(wc -l <"$tmp/check-ins")" = 2 ] || { echo "FAIL: check-in tries after a connection failure" >&2; exit 1; }
 rm "$tmp/check-ins"
 if log=$(CHECK_IN=refused "$here/prepare.sh" 2>&1); then echo "FAIL: a refused check-in passed" >&2; exit 1; fi
-grep -qF "::error::Ployz Cloud refused the check-in for build b-1 (HTTP 409: This build already started or is no longer wanted.)" <<<"$log" ||
+grep -qF "::error::Ployz Cloud refused the check-in for build $build (HTTP 409: This build already started or is no longer wanted.)" <<<"$log" ||
   { echo "FAIL: a refused check-in did not print Cloud's answer" >&2; echo "$log" >&2; exit 1; }
 [ "$(wc -l <"$tmp/check-ins")" = 1 ] || { echo "FAIL: a refused check-in was retried" >&2; exit 1; }
 
@@ -123,5 +124,9 @@ grep -qxF "::error::Could not install ployz 0.1.0-beta.28." <<<"$log" || { echo 
 rm "$tmp/installed"
 if CHECK_IN=bad-version "$here/prepare.sh" >/dev/null 2>&1; then echo "FAIL: accepted a malformed ployz version" >&2; exit 1; fi
 [ ! -e "$tmp/installed" ] || { echo "FAIL: installed a malformed ployz version" >&2; exit 1; }
+for id in . .. ../x a/b "a b" "$(printf 'a%.0s' {1..129})"; do
+  if log=$(PLOYZ_BUILD_ID=$id "$here/prepare.sh" 2>&1); then echo "FAIL: accepted build id $id" >&2; exit 1; fi
+  grep -qxF "::error::Invalid build id." <<<"$log" || { echo "FAIL: build id $id not refused as invalid" >&2; echo "$log" >&2; exit 1; }
+done
 if PLOYZ_CLOUD=https://evil.test/path "$here/prepare.sh" >/dev/null 2>&1; then echo "FAIL: accepted a Cloud URL with a path" >&2; exit 1; fi
 echo "ok"
