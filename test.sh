@@ -180,8 +180,9 @@ for command in "assemble $tmp/fixture.json $tmp/short.key $tmp/fixture.grant" "h
   # shellcheck disable=SC2086 # the command's words
   if out=$(node "$here/grant.js" $command 2>"$tmp/stderr"); then echo "FAIL: accepted a 31-byte key ($command)" >&2; exit 1; fi
   # On stderr: the caller's command substitution would swallow stdout.
-  [ -z "$out" ] && [ "$(cat "$tmp/stderr")" = "::error::The Build Grant key is not 32 bytes." ] ||
-    { echo "FAIL: a 31-byte key refused as: $out / $(cat "$tmp/stderr")" >&2; exit 1; }
+  if [ -n "$out" ] || [ "$(cat "$tmp/stderr")" != "::error::The Build Grant key is not 32 bytes." ]; then
+    echo "FAIL: a 31-byte key refused as: $out / $(cat "$tmp/stderr")" >&2; exit 1
+  fi
 done
 [ ! -e "$tmp/fixture.grant" ] || { echo "FAIL: wrote a grant from a 31-byte key" >&2; exit 1; }
 jq -n '{machine: "not hex"}' >"$tmp/fixture.json"
