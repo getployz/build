@@ -57,6 +57,7 @@ try {
         process.exit(2);
     }
 } catch (error) {
-    console.log(`::error::${error instanceof Refusal ? error.message : 'The Build Grant key could not be made or read.'}`);
+    // stderr, so a caller that captures stdout still shows it in the job log.
+    console.error(`::error::${error instanceof Refusal ? error.message : 'The Build Grant key could not be made or read.'}`);
     process.exit(1);
 }

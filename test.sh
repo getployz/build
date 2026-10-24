@@ -178,14 +178,23 @@ head -c 31 "$tmp/fixture.key" >"$tmp/short.key"
 rm "$tmp/fixture.grant"
 for command in "assemble $tmp/fixture.json $tmp/short.key $tmp/fixture.grant" "holder $tmp/short.key"; do
   # shellcheck disable=SC2086 # the command's words
-  if log=$(node "$here/grant.js" $command); then echo "FAIL: accepted a 31-byte key ($command)" >&2; exit 1; fi
-  [ "$log" = "::error::The Build Grant key is not 32 bytes." ] || { echo "FAIL: a 31-byte key refused as: $log" >&2; exit 1; }
+  if out=$(node "$here/grant.js" $command 2>"$tmp/stderr"); then echo "FAIL: accepted a 31-byte key ($command)" >&2; exit 1; fi
+  # On stderr: the caller's command substitution would swallow stdout.
+  [ -z "$out" ] && [ "$(cat "$tmp/stderr")" = "::error::The Build Grant key is not 32 bytes." ] ||
+    { echo "FAIL: a 31-byte key refused as: $out / $(cat "$tmp/stderr")" >&2; exit 1; }
 done
 [ ! -e "$tmp/fixture.grant" ] || { echo "FAIL: wrote a grant from a 31-byte key" >&2; exit 1; }
 jq -n '{machine: "not hex"}' >"$tmp/fixture.json"
 if node "$here/grant.js" assemble "$tmp/fixture.json" "$tmp/fixture.key" "$tmp/fixture.grant" >/dev/null 2>&1; then
   echo "FAIL: assembled a grant for a malformed Machine" >&2; exit 1
 fi
+
+# A key that can't be written fails the job with its reason in the log.
+rm -f "$RUNNER_TEMP/ployz-build/key" && mkdir -p "$RUNNER_TEMP/ployz-build/key/in-the-way"
+if log=$("$here/prepare.sh" 2>&1); then echo "FAIL: passed without a Build Grant key" >&2; exit 1; fi
+grep -qxF "::error::The Build Grant key could not be made or read." <<<"$log" ||
+  { echo "FAIL: a failed key did not say why" >&2; echo "$log" >&2; exit 1; }
+rm -r "$RUNNER_TEMP/ployz-build/key"
 
 # A Machine that minted for the holder: the runner assembles the grant from its own key, masked first.
 log=$(CHECK_IN=holder "$here/prepare.sh")
