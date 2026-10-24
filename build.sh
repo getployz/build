@@ -11,10 +11,23 @@ cloud=${PLOYZ_CLOUD%/}
 events="$work/events.jsonl"
 # How often, in seconds, new Build Steps go to Cloud while the build runs.
 interval=${PLOYZ_STEPS_INTERVAL:-5}
-PLOYZ_BUILD_GRANT=$(jq -r '.grant' "$work/check-in.json")
+PLOYZ_BUILD_GRANT=$(<"$work/grant")
 export PLOYZ_BUILD_GRANT
 : >"$events"
 sent=0
+
+# A cancelled job signals this script. The build stops, and is waited for, before the work dir and
+# the Build Grant key in it go.
+stop() {
+    if [[ -n ${build:-} ]]; then
+        kill -TERM "$build" 2>/dev/null || true
+        wait "$build" || true
+    fi
+    rm -rf "$work"
+}
+trap stop EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Every event line so far: prepare.sh's "Installing ployz", then the build's own.
 steps() {
@@ -63,6 +76,7 @@ while [[ -z $ended ]] && kill -0 "$build" 2>/dev/null; do
 done
 status=0
 wait "$build" || status=$?
+build=
 
 [[ -n $ended ]] || report "$(if [[ $status == 0 ]]; then jq -c '.platforms' "$work/result.json"; else echo '[]'; fi)"
 [[ $status == 0 ]] || exit "$status"
