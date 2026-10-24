@@ -49,12 +49,16 @@ cloud_post "$cloud/api/builds/$PLOYZ_BUILD_ID/check-in" "$work/check-in.json" \
 
 # Mask the grant and every build secret before anything can print them. Masks are per line.
 # Lines under 4 characters stay visible: masking a value like `0` would star out every 0 in the log.
-node "$grant_js" assemble "$work/check-in.json" "$work/key" "$work/grant" ||
-    fail "Check-in response has no Build Grant."
+node "$grant_js" assemble "$work/check-in.json" "$work/key" "$work/grant" || exit 1
 jq -r '.deployment.snapshots[]?.resolvedEnv // {} | .[]' "$work/check-in.json" |
     while IFS= read -r line; do
         if [[ ${#line} -ge 4 ]]; then echo "::add-mask::$line"; fi
     done
+# Cloud answered with the grant, not the Machine: one of them predates runner-held keys. Such a grant opens no Sealed
+# values, so the Machine refuses `/ployz/sealed` and a build that reads one fails closed.
+if ! jq -e 'has("machine")' "$work/check-in.json" >/dev/null; then
+    echo "::notice::This build used a Cloud-held Build Grant."
+fi
 
 commit=$(jq -r '.commit' "$work/check-in.json")
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fail "Check-in response has no commit."

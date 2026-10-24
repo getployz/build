@@ -53,9 +53,11 @@ report() {
     fi
 }
 
+# Build scratch, opened Sealed values included, stays under the work dir, which goes on any exit.
+install -d -m 0700 "$work/tmp"
 # stdout is one JSON line, printed once the image is pushed; build logs go to stderr and, as
 # events, to a file. After the push, ployz goes on uploading build cache, which Cloud doesn't wait for.
-ployz build \
+TMPDIR="$work/tmp" ployz build \
     --deployment "$work/deployment.json" \
     --commit "$(jq -r '.commit' "$work/check-in.json")" \
     --fingerprint "$(jq -r '.fingerprint' "$work/check-in.json")" \

@@ -51,11 +51,15 @@ cat >"$tmp/stubs/ployz" <<STUB
 #!/usr/bin/env bash
 [ "\$PLOYZ_BUILD_GRANT" = "\${GRANT:-ployzgrant1:grant-secret}" ] || { echo "grant not exported" >&2; exit 1; }
 [ "\$*" = "build --deployment $tmp/runner/ployz-build/deployment.json --commit $commit --fingerprint $fingerprint --source $tmp/workspace --events $tmp/runner/ployz-build/events.jsonl" ] || { echo "bad args: \$*" >&2; exit 1; }
+[ "\$TMPDIR" = $tmp/runner/ployz-build/tmp ] && [ "\$(stat -c %a "\$TMPDIR")" = 700 ] || { echo "TMPDIR is not the work dir's" >&2; exit 1; }
 events=$tmp/runner/ployz-build/events.jsonl
-# PLOYZ_HANG=1: a build still running when the job is cancelled. Stopped, it takes a moment, then notes whether the key is still there.
+# PLOYZ_HANG: a build still running, an opened Sealed value in its scratch, when the job is cancelled.
+# PLOYZ_HANG=1 dies on TERM. PLOYZ_HANG=graceful takes a moment to stop, then notes whether the key is still there.
 if [ -n "\${PLOYZ_HANG:-}" ]; then
-  trap 'sleep 0.3; [ -e "$tmp/runner/ployz-build/key" ] && : >"$tmp/stopped-with-key"; exit 143' TERM
+  mkdir -p "\$TMPDIR/ployz-build-1/private/sealed" && echo sealed-value >"\$TMPDIR/ployz-build-1/private/sealed/TOKEN"
   echo "\$\$" >"$tmp/ployz.pid"
+  [ "\$PLOYZ_HANG" = graceful ] || exec sleep 30
+  trap 'kill \$!; sleep 0.3; [ -e "$tmp/runner/ployz-build/key" ] && : >"$tmp/stopped-with-key"; exit 143' TERM
   sleep 30 & wait
 fi
 printf '%s\n' '{"at":1,"event":{"Build":{"Stage":"Building"}}}' '{"at":2,"event":{"Build":{"Stage":"Output"}}}' >>"\$events"
@@ -87,6 +91,8 @@ for short in 0 abc; do
   if grep -qxF "::add-mask::$short" <<<"$log"; then echo "FAIL: short value $short masked" >&2; exit 1; fi
 done
 grep -qxF "commit=$commit" "$GITHUB_OUTPUT" || { echo "FAIL: commit output" >&2; exit 1; }
+# The legacy grant, minted by Cloud, opens no Sealed values; the job says which grant it used.
+grep -qxF "::notice::This build used a Cloud-held Build Grant." <<<"$log" || { echo "FAIL: a Cloud-held grant went unnoticed" >&2; exit 1; }
 # The Build Grant key stays on the runner, readable only by its user; Cloud gets the holder.
 key=$RUNNER_TEMP/ployz-build/key
 [ "$(stat -c %a "$key")" = 600 ] || { echo "FAIL: the key file is not 0600" >&2; exit 1; }
@@ -159,6 +165,23 @@ fixture=ployzgrant1:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQGdYbGd7_1aYLqESvSS
 [ "$(node "$here/grant.js" assemble "$tmp/fixture.json" "$tmp/fixture.key" "$tmp/fixture.grant")" = "::add-mask::$fixture" ] ||
   { echo "FAIL: the assembled grant was not masked" >&2; exit 1; }
 [ "$(cat "$tmp/fixture.grant")" = "$fixture" ] || { echo "FAIL: assembled grant" >&2; exit 1; }
+# A key or grant file already there, readable by others, ends up 0600 all the same.
+for file in fixture.grant fresh.key; do echo stale >"$tmp/$file"; chmod 644 "$tmp/$file"; done
+(umask 022; node "$here/grant.js" assemble "$tmp/fixture.json" "$tmp/fixture.key" "$tmp/fixture.grant" >/dev/null)
+(umask 022; node "$here/grant.js" key "$tmp/fresh.key" >/dev/null)
+for file in fixture.grant fresh.key; do
+  [ "$(stat -c %a "$tmp/$file")" = 600 ] || { echo "FAIL: $file is not 0600 after a rewrite" >&2; exit 1; }
+done
+[ "$(stat -c %s "$tmp/fresh.key")" = 32 ] || { echo "FAIL: the new key is not a 32-byte seed" >&2; exit 1; }
+# A key that is not a 32-byte seed is refused with a fixed line; no grant is written.
+head -c 31 "$tmp/fixture.key" >"$tmp/short.key"
+rm "$tmp/fixture.grant"
+for command in "assemble $tmp/fixture.json $tmp/short.key $tmp/fixture.grant" "holder $tmp/short.key"; do
+  # shellcheck disable=SC2086 # the command's words
+  if log=$(node "$here/grant.js" $command); then echo "FAIL: accepted a 31-byte key ($command)" >&2; exit 1; fi
+  [ "$log" = "::error::The Build Grant key is not 32 bytes." ] || { echo "FAIL: a 31-byte key refused as: $log" >&2; exit 1; }
+done
+[ ! -e "$tmp/fixture.grant" ] || { echo "FAIL: wrote a grant from a 31-byte key" >&2; exit 1; }
 jq -n '{machine: "not hex"}' >"$tmp/fixture.json"
 if node "$here/grant.js" assemble "$tmp/fixture.json" "$tmp/fixture.key" "$tmp/fixture.grant" >/dev/null 2>&1; then
   echo "FAIL: assembled a grant for a malformed Machine" >&2; exit 1
@@ -168,24 +191,28 @@ fi
 log=$(CHECK_IN=holder "$here/prepare.sh")
 grant="ployzgrant1:$({ printf '\1%.0s' {1..32}; cat "$key"; } | base64 -w0 | tr '+/' '-_' | tr -d =)"
 [ "$(head -n 2 <<<"$log" | tail -n 1)" = "::add-mask::$grant" ] || { echo "FAIL: the assembled grant was not masked first" >&2; echo "$log" >&2; exit 1; }
+if grep -qF "::notice::" <<<"$log"; then echo "FAIL: a runner-held grant was noticed as Cloud-held" >&2; exit 1; fi
 rm "$tmp/posted.jsonl"
 GRANT=$grant "$here/build.sh" >/dev/null || { echo "FAIL: build with the assembled grant" >&2; exit 1; }
 jq -s -e "$reported"' and .[-1].platforms == ["linux/amd64"]' "$tmp/posted.jsonl" >/dev/null || { echo "FAIL: build with the assembled grant did not report" >&2; exit 1; }
 
-# A cancelled job stops the build and waits for it before the key goes.
-"$here/prepare.sh" >/dev/null
-rm -f "$tmp/ployz.pid"
-PLOYZ_HANG=1 "$here/build.sh" >/dev/null 2>&1 &
-runner=$!
-for _ in {1..50}; do [ -s "$tmp/ployz.pid" ] && break; sleep 0.1; done
-[ -s "$tmp/ployz.pid" ] || { echo "FAIL: the hanging build did not start" >&2; exit 1; }
-kill -TERM "$runner"
-SECONDS=0
-status=0
-wait "$runner" || status=$?
-[ "$SECONDS" -lt 5 ] || { echo "FAIL: a cancelled job did not stop the build" >&2; exit 1; }
+# A cancelled job stops the build and waits for it before the work dir, the key and the build's scratch in it, goes.
+cancel() {
+  "$here/prepare.sh" >/dev/null
+  rm -f "$tmp/ployz.pid" "$tmp/stopped-with-key"
+  PLOYZ_HANG=$1 "$here/build.sh" >/dev/null 2>&1 &
+  local runner=$! status=0
+  for _ in {1..50}; do [ -s "$tmp/ployz.pid" ] && break; sleep 0.1; done
+  [ -s "$tmp/ployz.pid" ] || { echo "FAIL: the hanging build did not start ($1)" >&2; exit 1; }
+  kill -TERM "$runner"
+  SECONDS=0
+  wait "$runner" || status=$?
+  [ "$SECONDS" -lt 5 ] || { echo "FAIL: a cancelled job did not stop the build ($1)" >&2; exit 1; }
+  [ "$status" = 143 ] || { echo "FAIL: a cancelled build exited $status ($1)" >&2; exit 1; }
+  if kill -0 "$(cat "$tmp/ployz.pid")" 2>/dev/null; then echo "FAIL: the build outlived the cancelled job ($1)" >&2; exit 1; fi
+  [ ! -e "$RUNNER_TEMP/ployz-build" ] || { echo "FAIL: the work dir outlived the cancelled job ($1)" >&2; exit 1; }
+}
+cancel 1
+cancel graceful
 [ -e "$tmp/stopped-with-key" ] || { echo "FAIL: the key went before the build stopped" >&2; exit 1; }
-[ "$status" = 143 ] || { echo "FAIL: a cancelled build exited $status" >&2; exit 1; }
-if kill -0 "$(cat "$tmp/ployz.pid")" 2>/dev/null; then echo "FAIL: the build outlived the cancelled job" >&2; exit 1; fi
-[ ! -e "$RUNNER_TEMP/ployz-build" ] || { echo "FAIL: the key outlived the cancelled job" >&2; exit 1; }
 echo "ok"
