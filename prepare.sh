@@ -4,6 +4,7 @@ set -euo pipefail
 
 # shellcheck source=oidc.sh
 source "$(dirname "$0")/oidc.sh"
+grant_js="$(dirname "$0")/grant.js"
 work="$RUNNER_TEMP/ployz-build"
 fail() {
     echo "::error::$1"
@@ -11,6 +12,7 @@ fail() {
 }
 
 [[ "$(uname -s)" == Linux ]] || fail "Ployz builds need a Linux runner."
+command -v node >/dev/null || fail "Ployz builds need Node.js on the runner."
 # A URL path segment: never "." or "..".
 [[ "$PLOYZ_BUILD_ID" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$ ]] || fail "Invalid build id."
 cloud=${PLOYZ_CLOUD%/}
@@ -34,21 +36,30 @@ if ! has_containerd_store; then
     has_containerd_store || fail "Docker's containerd image store could not be enabled."
 fi
 
+# The Build Grant key never leaves the runner: Cloud mints the grant for its public half, the holder.
+holder=$(node "$grant_js" key "$work/key")
+jq -n --arg holder "$holder" '{holder: $holder}' >"$work/holder.json"
+
 # GitHub's OIDC token proves this run to Cloud; its audience is the Cloud origin.
 oidc_token "$cloud"
 
-cloud_post "$cloud/api/builds/$PLOYZ_BUILD_ID/check-in" "$work/check-in.json" ||
+cloud_post "$cloud/api/builds/$PLOYZ_BUILD_ID/check-in" "$work/check-in.json" \
+    -H "Content-Type: application/json" --data-binary "@$work/holder.json" ||
     fail "Ployz Cloud refused the check-in for build $PLOYZ_BUILD_ID ($cloud_error)."
 
 # Mask the grant and every build secret before anything can print them. Masks are per line.
 # Lines under 4 characters stay visible: masking a value like `0` would star out every 0 in the log.
-jq -r '.grant, (.deployment.snapshots[]?.resolvedEnv // {} | .[])' "$work/check-in.json" |
+node "$grant_js" assemble "$work/check-in.json" "$work/key" "$work/grant" || exit 1
+jq -r '.deployment.snapshots[]?.resolvedEnv // {} | .[]' "$work/check-in.json" |
     while IFS= read -r line; do
         if [[ ${#line} -ge 4 ]]; then echo "::add-mask::$line"; fi
     done
+# Cloud answered with the grant, not the Machine: one of them predates runner-held keys. Such a grant opens no Sealed
+# values, so the Machine refuses `/ployz/sealed` and a build that reads one fails closed.
+if ! jq -e 'has("machine")' "$work/check-in.json" >/dev/null; then
+    echo "::notice::This build used a Cloud-held Build Grant."
+fi
 
-jq -e '.grant | type == "string" and startswith("ployzgrant1:")' "$work/check-in.json" >/dev/null ||
-    fail "Check-in response has no Build Grant."
 commit=$(jq -r '.commit' "$work/check-in.json")
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fail "Check-in response has no commit."
 [[ "$(jq -r '.fingerprint' "$work/check-in.json")" =~ ^[0-9a-f]{64}$ ]] ||
