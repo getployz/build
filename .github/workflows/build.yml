@@ -1,0 +1,84 @@
+name: Ployz build
+# The builder an automatic deploy rule pins by commit. A repository calls it from its own
+# .github/workflows/ployz-build.yml. GitHub names this file and commit in the run's token
+# (job_workflow_ref, job_workflow_sha), so a Server can tell this builder ran, and the
+# caller cannot add steps to this job.
+#
+# It builds the commit GitHub ran, or the `commit` input for an approved or reviewed build,
+# and never one Cloud names. `ployz build --cloud` makes this build's keys, asks GitHub for
+# the tokens the Server checks, and opens the build secrets only when the Cluster's attest
+# key sealed them.
+on:
+  workflow_call:
+    inputs:
+      cloud:
+        description: Ployz Cloud origin, such as https://ployz.dev.
+        required: true
+        type: string
+      commit:
+        description: A commit other than the one GitHub ran, for an approved or reviewed build. Empty builds the run's own commit.
+        required: false
+        type: string
+        default: ""
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # The ployz CLI this builder commit runs, pinned by digest.
+      PLOYZ_URL: https://github.com/Ployz-test/build/releases/download/d3-lab-1/ployz
+      PLOYZ_SHA256: c7246a6f707d2da7d99b7d592abc245f1632d781fe3196f4e39cdd3c4638d181
+    steps:
+      - name: Check out the commit to build
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+          persist-credentials: false
+      - name: Install ployz
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/ployz-build"
+          install -d -m 0700 "$work" "$work/bin" "$work/tmp"
+          curl -fsSL --proto '=https' --retry 3 -o "$work/bin/ployz" "$PLOYZ_URL"
+          echo "$PLOYZ_SHA256  $work/bin/ployz" | sha256sum --check --strict -
+          chmod 0755 "$work/bin/ployz"
+      - name: Enable Docker's containerd image store
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/ployz-build"
+          if ! docker info --format '{{json .DriverStatus}}' | grep -q 'io.containerd.snapshotter.v1'; then
+            config=/etc/docker/daemon.json
+            if sudo test -s "$config"; then sudo cat "$config"; else echo '{}'; fi |
+              jq '.features["containerd-snapshotter"] = true' >"$work/daemon.json"
+            sudo install -m 0644 "$work/daemon.json" "$config"
+            sudo systemctl restart docker
+            docker info --format '{{json .DriverStatus}}' | grep -q 'io.containerd.snapshotter.v1'
+          fi
+      # Exposes the Actions cache service to later steps. ployz passes it to Buildx only
+      # when the rule's policy turns the cache on, in a scope named by the policy's digest
+      # and the attest key the build secrets opened with, so a run fed another key never
+      # shares an entry with an honest build.
+      - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3.1.0
+      - name: Build and push
+        shell: bash
+        env:
+          PLOYZ_CLOUD: ${{ inputs.cloud }}
+          PLOYZ_COMMIT: ${{ inputs.commit || github.sha }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/ployz-build"
+          trap 'rm -rf "$work"' EXIT
+          TMPDIR="$work/tmp" "$work/bin/ployz" build \
+            --cloud "$PLOYZ_CLOUD" \
+            --commit "$PLOYZ_COMMIT" \
+            --source "$GITHUB_WORKSPACE" \
+            --events "$work/events.jsonl" >"$work/result.json"
+          digest=$(jq -r '.digest' "$work/result.json")
+          echo "Pushed \`$digest\` to the Server." >>"$GITHUB_STEP_SUMMARY"
