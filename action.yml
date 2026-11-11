@@ -18,14 +18,14 @@ runs:
   using: composite
   steps:
     # Exposes ACTIONS_RUNTIME_TOKEN and the cache URLs so `ployz build` can use the GitHub Actions cache.
-    - uses: crazy-max/ghaction-github-runtime@v3
+    - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
     - id: prepare
       shell: bash
       env:
         PLOYZ_BUILD_ID: ${{ inputs.build }}
         PLOYZ_CLOUD: ${{ inputs.cloud }}
       run: '"$GITHUB_ACTION_PATH/prepare.sh"'
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       with:
         ref: ${{ steps.prepare.outputs.commit }}
         persist-credentials: false
