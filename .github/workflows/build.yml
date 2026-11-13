@@ -30,9 +30,11 @@ jobs:
       contents: read
       id-token: write
     env:
-      # The ployz CLI this builder commit runs, pinned by digest.
-      PLOYZ_URL: https://github.com/Ployz-test/build/releases/download/d3-lab-1/ployz
-      PLOYZ_SHA256: c7246a6f707d2da7d99b7d592abc245f1632d781fe3196f4e39cdd3c4638d181
+      # The ployz CLI this builder commit runs: the Linux x86-64 archive of a getployz/ployz release,
+      # pinned by the digest in that release's checksums.txt. Ployz pins a builder commit only after
+      # its CI checks the release key signed this digest (core/scripts/check-builder-pin.sh).
+      PLOYZ_RELEASE: RELEASE-PENDING
+      PLOYZ_ARCHIVE_SHA256: DIGEST-PENDING
     steps:
       - name: Check out the commit to build
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -45,9 +47,12 @@ jobs:
           set -euo pipefail
           work="$RUNNER_TEMP/ployz-build"
           install -d -m 0700 "$work" "$work/bin" "$work/tmp"
-          curl -fsSL --proto '=https' --retry 3 -o "$work/bin/ployz" "$PLOYZ_URL"
-          echo "$PLOYZ_SHA256  $work/bin/ployz" | sha256sum --check --strict -
-          chmod 0755 "$work/bin/ployz"
+          curl -fsSL --proto '=https' --retry 3 -o "$work/ployz.tar.gz" \
+            "https://github.com/getployz/ployz/releases/download/$PLOYZ_RELEASE/ployz_linux_amd64.tar.gz"
+          echo "$PLOYZ_ARCHIVE_SHA256  $work/ployz.tar.gz" | sha256sum --check --strict -
+          tar -xzf "$work/ployz.tar.gz" -C "$work/bin" ployz
+          rm "$work/ployz.tar.gz"
+          test "v$("$work/bin/ployz" --version)" = "$PLOYZ_RELEASE"
       - name: Enable Docker's containerd image store
         shell: bash
         run: |
