@@ -34,7 +34,8 @@ runs:
       env:
         PLOYZ_BUILD_ID: ${{ inputs.build }}
         PLOYZ_CLOUD: ${{ inputs.cloud }}
-      run: '"$GITHUB_ACTION_PATH/build.sh"'
+      # exec: a cancelled job signals only the step's shell, and build.sh must hear it to stop the build.
+      run: 'exec "$GITHUB_ACTION_PATH/build.sh"'
     - if: always()
       shell: bash
       run: rm -rf "$RUNNER_TEMP/ployz-build"

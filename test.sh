@@ -207,18 +207,27 @@ GRANT=$grant "$here/build.sh" >/dev/null || { echo "FAIL: build with the assembl
 jq -s -e "$reported"' and .[-1].platforms == ["linux/amd64"]' "$tmp/posted.jsonl" >/dev/null || { echo "FAIL: build with the assembled grant did not report" >&2; exit 1; }
 
 # A cancelled job stops the build and waits for it before the work dir, the key and the build's scratch in it, goes.
+# The runner signals only the step's shell, as `bash -eo pipefail <file>` running the action's own run line:
+# SIGINT, then SIGTERM once 7.5 seconds pass, then SIGKILL 2.5 seconds later. Here SIGTERM follows at once,
+# as it does when the build takes longer than 7.5 seconds to stop. A test job starts its children with SIGINT
+# ignored; the runner does not.
+sed -n "s/^ *run: '\(.*build\.sh.*\)'$/\1/p" "$here/action.yml" >"$tmp/step.sh"
+[ -s "$tmp/step.sh" ] || { echo "FAIL: no build step in action.yml" >&2; exit 1; }
 cancel() {
   "$here/prepare.sh" >/dev/null
   rm -f "$tmp/ployz.pid" "$tmp/stopped-with-key"
-  PLOYZ_HANG=$1 "$here/build.sh" >/dev/null 2>&1 &
+  GITHUB_ACTION_PATH=$here PLOYZ_HANG=$1 env --default-signal=INT,TERM \
+    bash --noprofile --norc -eo pipefail "$tmp/step.sh" >/dev/null 2>&1 &
   local runner=$! status=0
   for _ in {1..50}; do [ -s "$tmp/ployz.pid" ] && break; sleep 0.1; done
   [ -s "$tmp/ployz.pid" ] || { echo "FAIL: the hanging build did not start ($1)" >&2; exit 1; }
-  kill -TERM "$runner"
+  kill -INT "$runner"
+  sleep 0.1
+  kill -TERM "$runner" 2>/dev/null || true
   SECONDS=0
   wait "$runner" || status=$?
   [ "$SECONDS" -lt 5 ] || { echo "FAIL: a cancelled job did not stop the build ($1)" >&2; exit 1; }
-  [ "$status" = 143 ] || { echo "FAIL: a cancelled build exited $status ($1)" >&2; exit 1; }
+  [ "$status" = 130 ] || { echo "FAIL: a cancelled build exited $status ($1)" >&2; exit 1; }
   if kill -0 "$(cat "$tmp/ployz.pid")" 2>/dev/null; then echo "FAIL: the build outlived the cancelled job ($1)" >&2; exit 1; fi
   [ ! -e "$RUNNER_TEMP/ployz-build" ] || { echo "FAIL: the work dir outlived the cancelled job ($1)" >&2; exit 1; }
 }

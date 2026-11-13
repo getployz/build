@@ -17,8 +17,10 @@ export PLOYZ_BUILD_GRANT
 sent=0
 
 # A cancelled job signals this script. The build stops, and is waited for, before the work dir and
-# the Build Grant key in it go.
+# the Build Grant key in it go. The runner follows SIGINT with SIGTERM 7.5 seconds later, and that
+# must not cut the wait short: a build killed mid-cleanup leaves its builder for the next build.
 stop() {
+    trap '' INT TERM
     if [[ -n ${build:-} ]]; then
         kill -TERM "$build" 2>/dev/null || true
         wait "$build" || true
